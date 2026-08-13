@@ -1,0 +1,192 @@
+diff --git a/packages/attachment/attachment-local/tests/index.spec.ts b/packages/attachment/attachment-local/tests/index.spec.ts
+index 75629d3..ebee7e1 100644
+--- a/packages/attachment/attachment-local/tests/index.spec.ts
++++ b/packages/attachment/attachment-local/tests/index.spec.ts
+@@ -24,6 +24,15 @@ describe('local attachment service', () => {
+     })
+   })
+ 
++  it('registers and disposes image-intake consumers', () => {
++    const service = new LocalAttachmentStore(new Context(), {})
++    expect(service.hasImageIntakeConsumer()).toBe(false)
++    const dispose = service.registerImageIntakeConsumer('qwen-mm-attachments')
++    expect(service.hasImageIntakeConsumer()).toBe(true)
++    dispose()
++    expect(service.hasImageIntakeConsumer()).toBe(false)
++  })
++
+   it('saves and reads through the service boundary', async () => {
+     const dshHome = await mkdtemp(join(tmpdir(), 'dsh-attachment-service-'))
+     try {
+diff --git a/packages/attachment/attachment/README.i18n.yaml b/packages/attachment/attachment/README.i18n.yaml
+index bebd5ee..1ff973f 100644
+--- a/packages/attachment/attachment/README.i18n.yaml
++++ b/packages/attachment/attachment/README.i18n.yaml
+@@ -2,5 +2,5 @@
+ # side as of the last confirmed-consistent state. Both languages carry equal authority;
+ # after editing either side, bring the other along and re-record with:
+ #   pnpm run verify-translation-pairing --write packages/attachment/attachment/README.md
+-README.md: baeeca0cf939f1a3d4608769b362d532507b90f5
+-README.zh.md: 238b90794c510e71fffe34d62b044a5c2ece8a6e
++README.md: 736d604b3d377b9144a1832e70996ababec3e565
++README.zh.md: 049d5b7ba78bb791c1bc6030a0cfd5803fdd323d
+diff --git a/packages/attachment/attachment/README.md b/packages/attachment/attachment/README.md
+index baeeca0..736d604 100644
+--- a/packages/attachment/attachment/README.md
++++ b/packages/attachment/attachment/README.md
+@@ -6,6 +6,8 @@ The durable attachment seam. `ctx.attachments` validates and atomically commits
+ 
+ Unsent composer images remain browser-owned temporary drafts. `validateImage` runs the same admission policy without persisting; batch writers validate every member first so a malformed member cannot strand earlier members as unreferenced objects. `saveImage` commits each accepted image before any model-visible session event is published, and `readImage` verifies the content-addressed object against its logged metadata. Callers may cancel `readImage`; implementations observe cancellation around backend and verification work and preserve it instead of translating it into a storage failure.
+ 
++Plugins that consume image blocks on text-only routes register themselves with `registerImageIntakeConsumer`; the host image-intake gate admits uploads on a text-only route only when the model declares image input or at least one consumer is registered.
++
+ ## Model Experience
+ 
+ Indirectly, through the role-neutral core `ImageBlock` and provider adapters that resolve its durable reference.
+diff --git a/packages/attachment/attachment/README.zh.md b/packages/attachment/attachment/README.zh.md
+index 238b907..049d5b7 100644
+--- a/packages/attachment/attachment/README.zh.md
++++ b/packages/attachment/attachment/README.zh.md
+@@ -6,6 +6,8 @@
+ 
+ 未发送的输入区图片仍是由浏览器持有的临时草稿。`validateImage` 运行相同的准入策略，但不执行持久化；批量写入方会先校验每个成员，避免某个格式错误的成员使较早的成员成为无引用对象。`saveImage` 会在发布任何模型可见的会话事件前提交每张已接受的图片，`readImage` 则根据已记录的元数据校验内容寻址对象。调用方可以取消 `readImage`；实现会在后端读取与校验工作的边界观察取消，并保留取消语义，而不会将其转换为存储失败。
+ 
++在纯文本路由上消费图片块的插件通过 `registerImageIntakeConsumer` 注册自己；host 的图片准入闸只有在模型声明图片输入、或至少有一个消费方注册时才在纯文本路由上放行上传。
++
+ ## 模型体验
+ 
+ 该包通过角色无关的核心 `ImageBlock`，以及解析其持久引用的提供方适配器，间接影响模型。
+diff --git a/packages/attachment/attachment/src/index.ts b/packages/attachment/attachment/src/index.ts
+index 1bfb1ea..e062ccc 100644
+--- a/packages/attachment/attachment/src/index.ts
++++ b/packages/attachment/attachment/src/index.ts
+@@ -27,6 +27,8 @@ declare module '@deepseek-ai/cordis' {
+ 
+ /** Immutable binary attachment service. Implementations validate bytes before publishing a reference. */
+ export abstract class AttachmentStore extends Service {
++  private readonly imageIntakeConsumers = new Set<string>()
++
+   constructor(ctx: Context) {
+     super(ctx, 'attachments')
+   }
+@@ -34,6 +36,30 @@ export abstract class AttachmentStore extends Service {
+   /** Deployment-resolved image policy used by authoritative and fast-path validation. */
+   abstract readonly imageLimits: ImageAttachmentLimits
+ 
++  /**
++   * Register one plugin that consumes image blocks on text-only routes
++   * (for example by exporting them to files an external MCP tool can read).
++   * The host image-intake gate then admits images even when the route model
++   * declares no `image` input modality.
++   * @param plugin - the consuming plugin's name.
++   * @returns a disposer that unregisters the consumer.
++   */
++  registerImageIntakeConsumer(plugin: string): () => void {
++    this.imageIntakeConsumers.add(plugin)
++    return () => {
++      this.imageIntakeConsumers.delete(plugin)
++    }
++  }
++
++  /**
++   * Whether any plugin in the composition consumes image blocks on behalf of
++   * text-only routes. Consulted by the host image-intake gate.
++   * @returns true when at least one consumer is registered.
++   */
++  hasImageIntakeConsumer(): boolean {
++    return this.imageIntakeConsumers.size > 0
++  }
++
+   /**
+    * Validate one image without persisting it.
+    * Batch callers validate every member before saving any member.
+diff --git a/packages/host/apiproxy/src/api-proxy.ts b/packages/host/apiproxy/src/api-proxy.ts
+index bda9936..d484404 100644
+--- a/packages/host/apiproxy/src/api-proxy.ts
++++ b/packages/host/apiproxy/src/api-proxy.ts
+@@ -2485,7 +2485,13 @@ export function createApiProxy(ctx: Context, defaults: ApiProxyDefaults): ApiPro
+             if (hasImage) {
+               const current = selectionFor(agent).current
+               const modelInfo = await ctx.llm.resolveModelInfo(current.provider, current.model)
+-              if (modelInfo.inputModalities !== undefined && !modelInfo.inputModalities.includes('image')) {
++              // A plugin that consumes image blocks on text-only routes (the
++              // qwen-mm attachment bridge) registers an image-intake consumer;
++              // with one present, uploading is allowed and the consumer
++              // rewrites the blocks before any text-only serializer sees them.
++              if (modelInfo.inputModalities !== undefined
++                && !modelInfo.inputModalities.includes('image')
++                && !ctx.attachments.hasImageIntakeConsumer()) {
+                 return err(request, {
+                   code: 'attachment-error',
+                   message: `Model "${current.model}" does not support image input.`,
+diff --git a/packages/host/apiproxy/tests/api-proxy-models.spec.ts b/packages/host/apiproxy/tests/api-proxy-models.spec.ts
+index 7b6cc3c..28ed965 100644
+--- a/packages/host/apiproxy/tests/api-proxy-models.spec.ts
++++ b/packages/host/apiproxy/tests/api-proxy-models.spec.ts
+@@ -196,6 +196,66 @@ describe('Web session model selection', () => {
+     await ctx.fiber.dispose()
+   })
+ 
++  it('admits images on a text-only route when an image-intake consumer is registered', async () => {
++    const { ctx, agent, sessionId } = await harness()
++    registerTextOnly(ctx)
++    const saveImage = vi.fn((input: { data: Uint8Array; mediaType: 'image/png'; name?: string }) => Promise.resolve({
++      attachmentId: 'att-consumer',
++      mediaType: input.mediaType,
++      bytes: input.data.byteLength,
++      width: 1,
++      height: 1,
++      ...input.name === undefined ? {} : { name: input.name },
++    }))
++    ctx.provide('attachments', {
++      imageLimits: { maxImageBytes: 4, maxImagesPerMessage: 2, maxMessageImageBytes: 4, maxImagePixels: 4, mediaTypes: ['image/png'] },
++      validateImage: vi.fn(() => Promise.resolve()),
++      saveImage,
++      registerImageIntakeConsumer: () => () => {},
++      hasImageIntakeConsumer: () => true,
++    } as never)
++    const followup = vi.fn()
++    Object.assign(agent, { followup })
++    const api = createApiProxy(ctx, {
++      defaultModelSelection: () => ({ provider: 'text-only', model: 'plain' }),
++      cwd: '/tmp',
++    })
++    const result = await api.sessions.prompt(request({
++      sessionId,
++      mode: 'queue' as const,
++      content: [{ type: 'image' as const, mediaType: 'image/png' as const, data: 'AQ==', name: 'first.png' }],
++    }))
++    expect(result.result.ok).toBe(true)
++    expect(saveImage).toHaveBeenCalledTimes(1)
++    await ctx.fiber.dispose()
++  })
++
++  it('refuses images on a text-only route without an image-intake consumer', async () => {
++    const { ctx, agent, sessionId } = await harness()
++    registerTextOnly(ctx)
++    ctx.provide('attachments', {
++      imageLimits: { maxImageBytes: 4, maxImagesPerMessage: 2, maxMessageImageBytes: 4, maxImagePixels: 4, mediaTypes: ['image/png'] },
++      validateImage: vi.fn(() => Promise.resolve()),
++      saveImage: vi.fn(),
++      registerImageIntakeConsumer: () => () => {},
++      hasImageIntakeConsumer: () => false,
++    } as never)
++    const api = createApiProxy(ctx, {
++      defaultModelSelection: () => ({ provider: 'text-only', model: 'plain' }),
++      cwd: '/tmp',
++    })
++    const result = await api.sessions.prompt(request({
++      sessionId,
++      mode: 'queue' as const,
++      content: [{ type: 'image' as const, mediaType: 'image/png' as const, data: 'AQ==' }],
++    }))
++    expect(result.result).toMatchObject({
++      ok: false,
++      error: { code: 'attachment-error', details: { reason: 'MODEL_DOES_NOT_SUPPORT_IMAGES' } },
++    })
++    await ctx.fiber.dispose()
++  })
++
+   it('refuses a text-only selection while durable or pending image content remains visible', async () => {
+     const { ctx, agent, sessionId } = await harness()
+     registerTextOnly(ctx)

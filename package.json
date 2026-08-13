@@ -1,0 +1,51 @@
+{
+  "name": "@deepseek-ai/dsh-qwen-mm",
+  "version": "0.1.0",
+  "description": "Qwen-MM-Plugins integration bundle for DeepSeek Harness: bundled multimodal skills, MCP server rows, and an image attachment bridge for text-only model routes",
+  "type": "module",
+  "main": "lib/index.js",
+  "types": "lib/types/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./lib/types/index.d.ts",
+      "default": "./lib/index.js"
+    },
+    "./invariant": {
+      "types": "./lib/types/invariant.d.ts",
+      "default": "./lib/invariant.js"
+    },
+    "./attachments": {
+      "types": "./lib/types/attachments.d.ts",
+      "default": "./lib/attachments.js"
+    },
+    "./cordis.patch.yml": "./cordis.patch.yml",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib/index.js",
+    "lib/invariant.js",
+    "lib/attachments.js",
+    "lib/types/**/*.d.ts",
+    "cordis.patch.yml",
+    "assets"
+  ],
+  "license": "MIT",
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "dependencies": {
+    "@deepseek-ai/schemastery": "^3.18.1"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/cordis": "^4.0.1",
+    "@deepseek-ai/dsh-agent": "^0.1.0-rc.6",
+    "@deepseek-ai/dsh-attachment": "^0.0.1-rc.1",
+    "@deepseek-ai/dsh-home-paths": "^0.0.1-rc.3",
+    "@deepseek-ai/dsh-invariants": "^0.0.1-rc.1",
+    "@deepseek-ai/dsh-llm": "^0.0.1-rc.1",
+    "@deepseek-ai/dsh-mcp-client": "^0.0.1-rc.1",
+    "@deepseek-ai/dsh-skill": "^0.0.1-rc.1"
+  }
+}
