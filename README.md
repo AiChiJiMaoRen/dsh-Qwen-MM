@@ -91,7 +91,18 @@ curl -fsSL https://raw.githubusercontent.com/QwenLM/Qwen-MM-Plugins/main/install
 拖图功能依赖 DeepSeek Harness 核心的一小段改动（`AttachmentStore` 上的图片消费方注册表，由 host 图片准入闸查询）。它**尚未进入官方发布版**，两个获取方式：
 
 - **推荐**：使用 [RRRosmontis/deepseek-harness](https://github.com/RRRosmontis/deepseek-harness) fork，改动已包含在内（见「开箱即用」）。
-- **或**：把 [`deepseek-harness-core.patch`](./deepseek-harness-core.patch) 应用到任意 DeepSeek Harness 源码后再构建。
+- **或**：把 [`deepseek-harness-core.patch`](./deepseek-harness-core.patch) 应用到任意 DeepSeek Harness 源码后再构建：
+
+  ```sh
+  git clone https://github.com/deepseek-ai/deepseek-harness.git
+  cd deepseek-harness
+  curl -O https://raw.githubusercontent.com/RRRosmontis/dsh-qwen-mm/main/deepseek-harness-core.patch
+  git apply --check deepseek-harness-core.patch   # 先干跑，确认无冲突
+  git apply deepseek-harness-core.patch           # 正式应用
+  pnpm install && pnpm run build
+  ```
+
+  该 patch 基于 deepseek-harness `master` 顶点（commit `47f9438`）生成；对更旧或更新版本可能需手动合并。
 
 MCP 服务器与内置 skills 无需该改动，在官方发布版上即可工作；只有拖图准入需要它。
 
