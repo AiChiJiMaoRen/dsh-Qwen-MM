@@ -32,13 +32,34 @@ DeepSeek 模型是纯文本的，所以 Web 输入框的图片准入默认会拒
 
 拖入图片 → 文件落盘 → 纯文本模型通过 MCP 读懂它。
 
-## 安装 / Install
+## 开箱即用（推荐）/ Out-of-the-box (recommended)
 
-前置：[`uv`](https://docs.astral.sh/uv/)（提供 `uvx`）+ 一份 DeepSeek Harness 安装。
+拖图功能依赖 DeepSeek Harness 核心的一小段改动（图片消费方注册表），它尚未进入官方发布版。因此推荐从 **包含该改动的 fork** 安装，这样全部功能（含拖图）一步到位：
+
+```sh
+# 1. 克隆 fork（含核心改动 + 插件源码）
+git clone https://github.com/RRRosmontis/deepseek-harness.git
+cd deepseek-harness
+pnpm install
+pnpm run build
+
+# 2. 安装本插件到 web profile（从 git 或本地）
+pnpm dsh --profile web plugin add github:RRRosmontis/dsh-qwen-mm
+#   或：pnpm dsh --profile web plugin add ./packages/bundle/qwen-mm
+
+# 3. 启动
+pnpm dsh --profile web
+```
+
+前置：Node.js、[`pnpm`](https://pnpm.io/)、[`uv`](https://docs.astral.sh/uv/)（提供 `uvx`）。
+
+## 仅装插件 / Plugin-only
+
+如果你用的是**官方发布版** `dsh`，MCP 工具与内置 skills 照常可用；只有**拖图**功能需要核心改动（见下方「核心前置」）。
 
 ```sh
 # 从 git 仓库安装（锁定 commit）
-dsh plugin --profile web add github:you/dsh-qwen-mm#<sha>
+dsh plugin --profile web add github:RRRosmontis/dsh-qwen-mm#<sha>
 # 或从本地目录安装
 dsh plugin --profile web add ./dsh-qwen-mm
 ```
@@ -63,11 +84,16 @@ curl -fsSL https://raw.githubusercontent.com/QwenLM/Qwen-MM-Plugins/main/install
 @place.jpg     识别这张照片的拍摄地点并在网上核实。
 ```
 
-…或者直接把图片拖进输入框提问。
+…或者直接把图片拖进输入框提问（拖图需使用上面的 fork）。
 
 ## 核心前置 / Core prerequisite
 
-拖图功能依赖 DeepSeek Harness 核心的一小段改动（`AttachmentStore` 上的图片消费方注册表，由 host 图片准入闸查询）。它**尚未进入已发布版本**；请把 [`deepseek-harness-core.patch`](./deepseek-harness-core.patch) 应用到 DeepSeek Harness 源码，或把对应改动合并进上游。MCP 服务器与内置 skills 在官方发布版上即可工作，无需该补丁；只有拖图准入需要它。
+拖图功能依赖 DeepSeek Harness 核心的一小段改动（`AttachmentStore` 上的图片消费方注册表，由 host 图片准入闸查询）。它**尚未进入官方发布版**，两个获取方式：
+
+- **推荐**：使用 [RRRosmontis/deepseek-harness](https://github.com/RRRosmontis/deepseek-harness) fork，改动已包含在内（见「开箱即用」）。
+- **或**：把 [`deepseek-harness-core.patch`](./deepseek-harness-core.patch) 应用到任意 DeepSeek Harness 源码后再构建。
+
+MCP 服务器与内置 skills 无需该改动，在官方发布版上即可工作；只有拖图准入需要它。
 
 ## 目录结构 / Layout
 
