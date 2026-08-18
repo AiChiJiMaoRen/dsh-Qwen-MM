@@ -11,7 +11,7 @@ import type { Context } from '@deepseek-ai/cordis';
 export declare const name = "qwen-mm";
 /** Service required by the bundled provider. */
 export declare const inject: string[];
-/** DeepSeek Harness releases this build is validated against. */
+/** dsh releases this build has been validated against (advisory, not blocking). */
 export declare const SUPPORTED_DSH_VERSIONS: readonly string[];
 /** Read the running harness version from the harmonized app-boot package. */
 export declare function detectDshVersion(): string | undefined;
