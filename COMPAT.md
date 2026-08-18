@@ -8,6 +8,7 @@ patch. This build is validated against the following matrix.
 | Plugin | DeepSeek Harness | Status |
 |---|---|---|
 | `@deepseek-ai/dsh-qwen-mm@0.1.0` | `0.1.0-rc.6` | ✅ validated |
+| `@deepseek-ai/dsh-qwen-mm@0.1.0` | `0.1.0-rc.7` | ✅ validated |
 
 The plugin refuses to start on a version outside the matrix (strict version
 guard): the `qwen-mm` row throws at boot with a clear message naming the

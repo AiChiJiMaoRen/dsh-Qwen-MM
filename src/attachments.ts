@@ -24,6 +24,7 @@ import type { TextBlock, UserMessage } from '@deepseek-ai/dsh-llm'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
 import z from '@deepseek-ai/schemastery'
 import type Schema from '@deepseek-ai/schemastery'
+import { readSettings } from './settings.ts'
 
 /** Cordis plugin name. */
 export const name = 'qwen-mm-attachments'
@@ -191,7 +192,12 @@ export function renderReminder(files: readonly ExportedImage[]): string {
 
 /** Register the attachment bridge: export images, copy them into the workspace, and rewrite image blocks. */
 export function apply(ctx: Context, config: Config): void {
-  const exportDir = config.exportDir ?? join(resolveDshHome(), 'qwen-mm', 'attachments')
+  const settings = readSettings(ctx)
+  if (settings.bridgeEnabled === false) {
+    ctx.logger.info('qwen-mm-attachments: disabled via settings (dsh-qwen-mm.bridgeEnabled=false)')
+    return
+  }
+  const exportDir = config.exportDir ?? settings.exportDir ?? join(resolveDshHome(), 'qwen-mm', 'attachments')
   ctx.on('agent/pre-step', async ({ agent, messages, signal }, next): Promise<PreStepDecision> => {
     const decision = await next()
     if (decision.kind === 'reject') return decision
@@ -205,7 +211,7 @@ export function apply(ctx: Context, config: Config): void {
 
     // Prefer workspace copies when the session has a workspace; they are
     // reachable with ordinary file tools as well as the MCP readers.
-    const workspace = config.workspaceDir ?? workspaceRootFor(agent)
+    const workspace = config.workspaceDir ?? settings.workspaceDir ?? workspaceRootFor(agent)
     const preferred = workspace === undefined
       ? exported
       : await mirrorToWorkspace(exported, join(workspace, 'qwen-mm'))

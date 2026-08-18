@@ -11,6 +11,7 @@ import { spawnSync } from 'node:child_process'
 import { createRequire } from 'node:module'
 import type { Context } from '@deepseek-ai/cordis'
 import { provider } from './skills.ts'
+import { installSettings } from './settings.ts'
 
 /** Cordis plugin name. */
 export const name = 'qwen-mm'
@@ -18,7 +19,7 @@ export const name = 'qwen-mm'
 export const inject = ['skills']
 
 /** DeepSeek Harness releases this build is validated against. */
-export const SUPPORTED_DSH_VERSIONS: readonly string[] = ['0.1.0-rc.6']
+export const SUPPORTED_DSH_VERSIONS: readonly string[] = ['0.1.0-rc.6', '0.1.0-rc.7']
 
 /** Read the running harness version from the harmonized app-boot package. */
 export function detectDshVersion(): string | undefined {
@@ -53,6 +54,9 @@ export function apply(ctx: Context): void {
   }
   warnIfMissing(ctx, 'uvx', 'install uv (https://docs.astral.sh/uv/) to enable the qwen-mm MCP servers')
   warnIfMissing(ctx, 'ffmpeg', 'install ffmpeg to enable video and audio capabilities')
+
+  // Serve the GUI settings namespace (Settings → 插件 → 插件配置).
+  installSettings(ctx)
 
   ctx.skills.registerProvider(() => provider)
 }

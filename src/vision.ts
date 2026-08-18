@@ -27,6 +27,7 @@ import {
 } from '@deepseek-ai/dsh-llm'
 import z from '@deepseek-ai/schemastery'
 import type Schema from '@deepseek-ai/schemastery'
+import { readSettings } from './settings.ts'
 
 /** Cordis plugin name. */
 export const name = 'qwen-mm-vision'
@@ -95,8 +96,13 @@ function detectSource(ctx: Context, twin: string): string | undefined {
 
 /** Register the twin route and steer the default selection toward it. */
 export function apply(ctx: Context, config: Config): void {
-  const twin = config.twinProvider ?? DEFAULT_TWIN_PROVIDER
-  const source = config.sourceProvider ?? detectSource(ctx, twin)
+  const settings = readSettings(ctx)
+  if (settings.visionEnabled === false) {
+    ctx.logger.info('qwen-mm-vision: disabled via settings (dsh-qwen-mm.visionEnabled=false)')
+    return
+  }
+  const twin = settings.twinProvider ?? config.twinProvider ?? DEFAULT_TWIN_PROVIDER
+  const source = settings.sourceProvider ?? config.sourceProvider ?? detectSource(ctx, twin)
   if (source === undefined) {
     throw new Error('qwen-mm-vision: no source provider to clone — install a text provider (e.g. @deepseek-ai/dsh-llm-deepseek) first')
   }
