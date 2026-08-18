@@ -10,10 +10,11 @@ patch. This build is validated against the following matrix.
 | `@deepseek-ai/dsh-qwen-mm@0.1.0` | `0.1.0-rc.6` | ✅ validated |
 | `@deepseek-ai/dsh-qwen-mm@0.1.0` | `0.1.0-rc.7` | ✅ validated |
 
-The plugin refuses to start on a version outside the matrix (strict version
-guard): the `qwen-mm` row throws at boot with a clear message naming the
-supported versions, and the peerDependencies in `package.json` encode the same
-range for install-time checks.
+The version check is **advisory — it never blocks boot**. The `qwen-mm` row
+warns once when the running version is outside the validated matrix and loads
+anyway, because this plugin only uses stable public seams and dsh releases
+evolve fast. peerDependencies in `package.json` express the same range for
+install-time guidance.
 
 ## What the guard covers
 
@@ -38,8 +39,9 @@ range for install-time checks.
    exists, otherwise extend `SUPPORTED_DSH_VERSIONS` (and the peer ranges)
    *after* verifying the seams above against the new release — the dsh-suite
    daily compat tests are the fastest way to learn what changed.
-3. Boot the profile; the `qwen-mm` row either loads (version supported) or
-   throws with the supported list. No partial degradation, no silent breakage.
+3. Boot the profile; the `qwen-mm` row loads normally. On an unlisted dsh
+   version it logs one advisory warning (never blocks boot); if anything
+   actually breaks, that warning plus this matrix is where to look first.
 
 ## Notes
 

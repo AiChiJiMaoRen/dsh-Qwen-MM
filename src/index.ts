@@ -18,7 +18,7 @@ export const name = 'qwen-mm'
 /** Service required by the bundled provider. */
 export const inject = ['skills']
 
-/** DeepSeek Harness releases this build is validated against. */
+/** dsh releases this build has been validated against (advisory, not blocking). */
 export const SUPPORTED_DSH_VERSIONS: readonly string[] = ['0.1.0-rc.6', '0.1.0-rc.7']
 
 /** Read the running harness version from the harmonized app-boot package. */
@@ -41,16 +41,16 @@ function warnIfMissing(ctx: Context, binary: string, hint: string): void {
 
 /** Register the bundled skill provider and guard the runtime environment. */
 export function apply(ctx: Context): void {
+  // Version check is ADVISORY, never blocking: dsh releases evolve fast and
+  // this plugin only uses stable public seams, so an unlisted version must not
+  // take the plugin down. Unknown versions warn once and load anyway.
   const version = detectDshVersion()
   if (version === undefined) {
-    throw new Error(
-      `qwen-mm: could not detect the running DeepSeek Harness version. Supported versions: ${SUPPORTED_DSH_VERSIONS.join(', ')}. See COMPAT.md for the pairing guide.`,
-    )
-  }
-  if (!SUPPORTED_DSH_VERSIONS.includes(version)) {
-    throw new Error(
-      `qwen-mm: DeepSeek Harness ${version} is not supported by this plugin build. Supported versions: ${SUPPORTED_DSH_VERSIONS.join(', ')}. Upgrade the plugin or dsh to a matching pair — see COMPAT.md.`,
-    )
+    ctx.logger.warn(`qwen-mm: could not detect the running dsh version; loading anyway (validated: ${SUPPORTED_DSH_VERSIONS.join(', ')}). See COMPAT.md.`)
+  } else if (!SUPPORTED_DSH_VERSIONS.includes(version)) {
+    ctx.logger.warn(`qwen-mm: dsh ${version} is not in the validated list (${SUPPORTED_DSH_VERSIONS.join(', ')}). Loading anyway — if anything breaks, check COMPAT.md for the pairing guide.`)
+  } else {
+    ctx.logger.info(`qwen-mm: dsh ${version} (validated)`)
   }
   warnIfMissing(ctx, 'uvx', 'install uv (https://docs.astral.sh/uv/) to enable the qwen-mm MCP servers')
   warnIfMissing(ctx, 'ffmpeg', 'install ffmpeg to enable video and audio capabilities')
