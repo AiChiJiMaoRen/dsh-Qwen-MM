@@ -4,6 +4,8 @@
 
 > 实现背景：本仓库最初按 fork（含核心补丁的 deepseek-harness）开发；0.1.0 起改为**孪生路由 + 附件桥接**方案，用纯插件侧接口取代核心补丁，因此不再依赖 fork，也不受官方发版节奏绑架（版本配对见 [COMPAT.md](./COMPAT.md)）。
 
+> **派生说明**：本仓库是 [RRRosmontis/dsh-qwen-mm](https://github.com/RRRosmontis/dsh-qwen-mm) 的**派生（Fork）**，MIT 许可，原作者署名与 LICENSE 保留。本分支在其基础上改造为**官方 dsh 0.1.0-rc.6 直接可用**：去掉对 fork 核心补丁的依赖（改用孪生路由 + 附件桥接），并加入严格版本守卫与 COMPAT 兼容矩阵。
+
 ## 它怎么工作
 
 1. **孪生路由（`qwen-mm-vision`）**——把当前文本模型克隆注册为 `qwen-mm-vision` provider，声明支持图片并将它设为默认模型选择。于是 host 的图片准入闸放行拖图/粘贴，Web 输入框的图片按钮可用；但每个请求仍走原文本 provider（孪生只是"准入门面"）。
