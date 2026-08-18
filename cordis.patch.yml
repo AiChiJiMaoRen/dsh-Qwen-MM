@@ -1,10 +1,11 @@
 # The dsh-qwen-mm bundle patch: one insert over the base profile rows.
 #
 # The `qwen-mm` row mounts this bundle's own plugin, which registers the
-# bundled Qwen-MM-Plugins skill provider on `ctx.skills`. Each `mcp-qwen-mm-*`
-# row mounts one Qwen-MM-Plugins capability through the in-box
-# `@deepseek-ai/dsh-mcp-client` bridge, spawning its stdio MCP server via uvx.
-# `edu-agent` is skill-only upstream and has no MCP server.
+# bundled Qwen-MM-Plugins skill provider on `ctx.skills`. The `qwen-mm-vision`
+# row mounts the twin route that admits image uploads without any harness core
+# patch. Each `mcp-qwen-mm-*` row mounts one Qwen-MM-Plugins capability through
+# the in-box `@deepseek-ai/dsh-mcp-client` bridge, spawning its stdio MCP
+# server via uvx. `edu-agent` is skill-only upstream and has no MCP server.
 #
 # Server refs pin the immutable release tags also used by the vendored skills;
 # refresh both together (see the package README). Users disable an unwanted
@@ -18,11 +19,20 @@
       name: '@deepseek-ai/dsh-qwen-mm'
 
     # Image attachment bridge: exports dragged/pasted images to local files
-    # and, on text-only routes, rewrites them into path references so the
-    # model can read them through the qwen-mm MCP tools. Disable by id in the
-    # profile patch to keep native image blocks on image-capable routes.
+    # (dsh home store + a copy in the session workspace) and rewrites them
+    # into path references so the text-only route never carries image bytes.
+    # Disable by id in the profile patch only if you keep a native vision
+    # route selected for every session.
     - id: qwen-mm-attachments
       name: '@deepseek-ai/dsh-qwen-mm/attachments'
+
+    # Twin vision route: registers a `qwen-mm-vision` provider that declares
+    # image input and makes it the default model selection, so the host
+    # image-intake gate admits uploads. Requests still stream through the
+    # original text provider; the attachment bridge rewrites image blocks
+    # first. No harness core patch is required.
+    - id: qwen-mm-vision
+      name: '@deepseek-ai/dsh-qwen-mm/vision'
 
     - id: mcp-qwen-mm-core
       name: '@deepseek-ai/dsh-mcp-client'

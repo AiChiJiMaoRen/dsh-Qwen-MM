@@ -1,6 +1,8 @@
 /**
- * `@deepseek-ai/dsh-qwen-mm/attachments` — image export, text-route
- * rewriting, and reminder injection through the pre-step waterfall.
+ * `@deepseek-ai/dsh-qwen-mm/attachments` — image export (store + workspace
+ * mirror), path rewriting, and reminder injection through the pre-step
+ * waterfall. The bridge always rewrites: the twin vision route handles
+ * admission, the underlying chat route is text-only by construction.
  */
 
 import { mkdtemp, readFile } from 'node:fs/promises'
@@ -41,18 +43,20 @@ async function tempDir(name: string): Promise<string> {
   return mkdtemp(join(tmpdir(), `dsh-${name}-`))
 }
 
-function stubAgent(options: { provider?: string; model?: string; header?: { provider: string; model: string } }): Agent {
-  const session = Session.create(SessionId('attachments-agent'), [], { version: 0, id: SessionId('attachments-agent'), createdAt: 0, cwd: tmpdir() })
+function stubAgent(options: { cwd?: string; header?: { provider: string; model: string } }): Agent {
+  const session = Session.create(SessionId('attachments-agent'), [], {
+    version: 0,
+    id: SessionId('attachments-agent'),
+    createdAt: 0,
+    ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
+  })
   const sessionWithHeader = Object.assign(session, {
-    requestHeader: () => options.header === undefined ? undefined : { config: options.header },
+    requestHeader: () => (options.header === undefined ? undefined : { config: options.header }),
   })
   return {
     ctx: new Context(),
     id: SessionId('attachments-agent'),
-    options: options.provider === undefined ? {} : {
-      provider: options.provider,
-      ...(options.model === undefined ? {} : { model: options.model }),
-    },
+    options: {},
     session: sessionWithHeader,
     inbox: new Inbox(sessionWithHeader, { inserted: () => {}, discarded: () => {}, claimed: () => {} }),
     status: 'idle',
@@ -92,6 +96,25 @@ describe('attachment bridge helpers', () => {
     expect(written.size).toBe(2)
   })
 
+  it('mirrors exported files into a workspace directory', async () => {
+    const dir = await tempDir('attach-export')
+    const workspace = await tempDir('attach-workspace')
+    const reader = async () => ({ data: new Uint8Array([1, 2, 3]) })
+    const exported = await Attachments.exportImages(reader, dir, [messageWithImage('a'.repeat(64))], signal)
+    const mirrored = await Attachments.mirrorToWorkspace(exported, workspace)
+    expect(mirrored[0]?.path).toBe(join(workspace, `${'a'.repeat(64)}.png`))
+    expect((await readFile(mirrored[0]!.path)).length).toBe(3)
+    // Idempotent: existing workspace copies are not rewritten.
+    const again = await Attachments.mirrorToWorkspace(exported, workspace)
+    expect(again[0]?.path).toBe(mirrored[0]?.path)
+  })
+
+  it('reads the session workspace root from the session header cwd', () => {
+    const agent = stubAgent({ cwd: 'C:\\work\\project' })
+    expect(Attachments.workspaceRootFor(agent)).toBe('C:\\work\\project')
+    expect(Attachments.workspaceRootFor(stubAgent({}))).toBeUndefined()
+  })
+
   it('rewrites image blocks into path references and passes other messages through', () => {
     const byId = new Map<string, string>([[`${'a'.repeat(64)}`, '/tmp/export/a.png']])
     const withImage = messageWithImage('a'.repeat(64))
@@ -124,46 +147,14 @@ describe('attachment bridge helpers', () => {
   })
 })
 
-describe('route modality resolution', () => {
-  const textOnly = { resolveModelInfo: async () => ({ inputModalities: ['text'] }) }
-  const imageCapable = { resolveModelInfo: async () => ({ inputModalities: ['text', 'image'] }) }
-  const unresolvable = { resolveModelInfo: async () => { throw new Error('no adapter') } }
-
-  it('detects image-capable routes from the session header', async () => {
-    const agent = stubAgent({ header: { provider: 'pi-ai', model: 'qwen-vl' } })
-    await expect(Attachments.routeSupportsImage(imageCapable as never, agent, signal)).resolves.toBe(true)
-  })
-
-  it('detects text-only routes from agent options', async () => {
-    const agent = stubAgent({ provider: 'deepseek', model: 'deepseek-chat' })
-    await expect(Attachments.routeSupportsImage(textOnly as never, agent, signal)).resolves.toBe(false)
-  })
-
-  it('treats an unresolvable route as text-only', async () => {
-    const agent = stubAgent({ provider: 'deepseek', model: 'deepseek-chat' })
-    await expect(Attachments.routeSupportsImage(unresolvable as never, agent, signal)).resolves.toBe(false)
-  })
-
-  it('treats a route without declared modalities as text-only', async () => {
-    const agent = stubAgent({ provider: 'deepseek', model: 'deepseek-chat' })
-    const noModalities = { resolveModelInfo: async () => ({}) }
-    await expect(Attachments.routeSupportsImage(noModalities as never, agent, signal)).resolves.toBe(false)
-  })
-
-  it('returns false without a resolvable provider or model', async () => {
-    const agent = stubAgent({})
-    await expect(Attachments.routeSupportsImage(textOnly as never, agent, signal)).resolves.toBe(false)
-  })
-})
-
 describe('attachment bridge plugin', () => {
-  async function setup(exportDir: string, llm: { resolveModelInfo: () => Promise<{ inputModalities: string[] }> }): Promise<{ ctx: Context; imageBytes: Uint8Array }> {
+  async function setup(exportDir: string, workspaceDir?: string): Promise<{ ctx: Context; imageBytes: Uint8Array }> {
     const ctx = new Context()
     const imageBytes = new Uint8Array([9, 8, 7])
-    ctx.provide('attachments', { readImage: async () => ({ ref: imageRef('a'.repeat(64)), data: imageBytes }), registerImageIntakeConsumer: () => () => {}, hasImageIntakeConsumer: () => false } as never)
-    ctx.provide('agents', {} as never)
-    ctx.provide('llm', llm as never)
-    await ctx.plugin(Attachments, { exportDir })
+    ctx.provide('attachments', {
+      readImage: async () => ({ ref: imageRef('a'.repeat(64)), data: imageBytes }),
+    } as never)
+    await ctx.plugin(Attachments, { exportDir, ...(workspaceDir === undefined ? {} : { workspaceDir }) })
     return { ctx, imageBytes }
   }
 
@@ -175,35 +166,37 @@ describe('attachment bridge plugin', () => {
     )
   }
 
-  it('exports and rewrites images on a text-only route, appending a reminder', async () => {
+  it('exports, mirrors into the workspace, and rewrites images on any route', async () => {
     const dir = await tempDir('attach-plugin')
-    const { ctx } = await setup(dir, { resolveModelInfo: async () => ({ inputModalities: ['text'] }) })
-    const agent = stubAgent({ provider: 'deepseek', model: 'deepseek-chat' })
+    const workspace = await tempDir('attach-plugin-ws')
+    const { ctx } = await setup(dir, workspace)
+    const agent = stubAgent({ cwd: workspace })
     const imageMessage = messageWithImage('a'.repeat(64))
     const decision = await firePreStep(ctx, agent, [imageMessage, textMessage('普通文字')])
     if (decision.kind !== 'enter') throw new Error('expected enter decision')
     const [rewritten, plain, reminder] = decision.messages
     if (rewritten === undefined || plain === undefined || reminder === undefined) throw new Error('expected three messages')
-    expect(rewritten.content[0]).toEqual({ type: 'text', text: `[Image attachment exported to: ${join(dir, `${'a'.repeat(64)}.png`)}]` })
+    // The workspace copy wins for the path reference.
+    expect(rewritten.content[0]).toEqual({ type: 'text', text: `[Image attachment exported to: ${join(workspace, 'qwen-mm', `${'a'.repeat(64)}.png`)}]` })
     expect(plain.content).toEqual([{ type: 'text', text: '普通文字' }])
-    expect(reminder.content[0]?.type).toBe('text')
-    expect((reminder.content[0] as { text: string }).text).toContain(join(dir, `${'a'.repeat(64)}.png`))
+    expect((await readFile(join(workspace, 'qwen-mm', `${'a'.repeat(64)}.png`))).length).toBe(3)
+    expect((reminder.content[0] as { text: string }).text).toContain(join(workspace, 'qwen-mm', `${'a'.repeat(64)}.png`))
   })
 
-  it('leaves messages untouched on an image-capable route', async () => {
-    const dir = await tempDir('attach-plugin-image')
-    const { ctx } = await setup(dir, { resolveModelInfo: async () => ({ inputModalities: ['text', 'image'] }) })
-    const agent = stubAgent({ provider: 'pi-ai', model: 'qwen-vl' })
-    const imageMessage = messageWithImage('a'.repeat(64))
-    const decision = await firePreStep(ctx, agent, [imageMessage])
+  it('falls back to the store path when the session has no workspace', async () => {
+    const dir = await tempDir('attach-plugin-no-ws')
+    const { ctx } = await setup(dir)
+    const agent = stubAgent({})
+    const decision = await firePreStep(ctx, agent, [messageWithImage('a'.repeat(64))])
     if (decision.kind !== 'enter') throw new Error('expected enter decision')
-    expect(decision.messages[0]?.content[0]).toEqual({ type: 'image', attachment: imageRef('a'.repeat(64)) })
+    const [rewritten] = decision.messages
+    expect(rewritten?.content[0]).toEqual({ type: 'text', text: `[Image attachment exported to: ${join(dir, `${'a'.repeat(64)}.png`)}]` })
   })
 
   it('passes a downstream reject through untouched', async () => {
     const dir = await tempDir('attach-plugin-reject')
-    const { ctx } = await setup(dir, { resolveModelInfo: async () => ({ inputModalities: ['text'] }) })
-    const agent = stubAgent({ provider: 'deepseek', model: 'deepseek-chat' })
+    const { ctx } = await setup(dir)
+    const agent = stubAgent({})
     const decision = await agentEvents(ctx, agent).waterfall(
       'agent/pre-step',
       { messages: [messageWithImage('a'.repeat(64))], turn: 1, step: 1, signal },
@@ -212,10 +205,10 @@ describe('attachment bridge plugin', () => {
     expect(decision).toEqual({ kind: 'reject' })
   })
 
-  it('leaves a text-only step untouched when no message carries an image', async () => {
+  it('leaves a step untouched when no message carries an image', async () => {
     const dir = await tempDir('attach-plugin-plain')
-    const { ctx } = await setup(dir, { resolveModelInfo: async () => ({ inputModalities: ['text'] }) })
-    const agent = stubAgent({ provider: 'deepseek', model: 'deepseek-chat' })
+    const { ctx } = await setup(dir)
+    const agent = stubAgent({})
     const plain = textMessage('普通文字')
     const decision = await firePreStep(ctx, agent, [plain])
     if (decision.kind !== 'enter') throw new Error('expected enter decision')
@@ -224,34 +217,11 @@ describe('attachment bridge plugin', () => {
 
   it('falls back to the default export dir when config omits it', async () => {
     const ctx = new Context()
-    ctx.provide('attachments', { readImage: async () => ({ ref: imageRef('a'.repeat(64)), data: new Uint8Array([1]) }), registerImageIntakeConsumer: () => () => {}, hasImageIntakeConsumer: () => false } as never)
-    ctx.provide('agents', {} as never)
-    ctx.provide('llm', { resolveModelInfo: async () => ({ inputModalities: ['text'] }) } as never)
+    ctx.provide('attachments', { readImage: async () => ({ ref: imageRef('a'.repeat(64)), data: new Uint8Array([1]) }) } as never)
     await ctx.plugin(Attachments, {})
-    const agent = stubAgent({ provider: 'deepseek', model: 'deepseek-chat' })
+    const agent = stubAgent({})
     const decision = await firePreStep(ctx, agent, [textMessage('no image')])
     if (decision.kind !== 'enter') throw new Error('expected enter decision')
     expect(decision.messages).toHaveLength(1)
-  })
-
-  it('registers an image-intake consumer on apply', async () => {
-    const dir = await tempDir('attach-plugin-consumer')
-    const ctx = new Context()
-    let registered: string | undefined
-    let disposed = false
-    ctx.provide('attachments', {
-      readImage: async () => ({ ref: imageRef('a'.repeat(64)), data: new Uint8Array([1]) }),
-      registerImageIntakeConsumer: (plugin: string) => {
-        registered = plugin
-        return () => { disposed = true }
-      },
-      hasImageIntakeConsumer: () => registered !== undefined,
-    } as never)
-    ctx.provide('agents', {} as never)
-    ctx.provide('llm', { resolveModelInfo: async () => ({ inputModalities: ['text'] }) } as never)
-    await ctx.plugin(Attachments, { exportDir: dir })
-    expect(registered).toBe('qwen-mm-attachments')
-    await ctx.fiber.dispose()
-    expect(disposed).toBe(true)
   })
 })

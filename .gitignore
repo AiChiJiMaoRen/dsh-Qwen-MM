@@ -3,3 +3,6 @@ lib/types/*.js
 lib/types/*.map
 *.tsbuildinfo
 *.log
+
+tsconfig.check.json
+

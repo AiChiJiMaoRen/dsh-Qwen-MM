@@ -18,4 +18,3 @@ export declare const SKILL_ENTRIES: readonly SkillEntry[];
 /** The Qwen-MM-Plugins bundled skill provider. */
 export declare const provider: SkillProvider;
 export {};
-//# sourceMappingURL=skills.d.ts.map

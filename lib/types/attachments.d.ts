@@ -1,29 +1,35 @@
 /**
- * Qwen-MM image attachment bridge: exports user-attached images to local
- * files and, on text-only model routes, rewrites the image blocks into
- * path-reference text so the model can read them through the qwen-mm MCP
- * tools (`mcp__qwen-mm-plugins-api__vision_chat`,
- * `mcp__qwen-mm-plugins-core__read_image`). Image-capable routes keep the
- * blocks untouched and read them natively.
+ * Qwen-MM image attachment bridge.
+ *
+ * The twin vision route (`qwen-mm-vision`) declares image input so the host
+ * image-intake gate admits uploads, but the underlying DeepSeek API is
+ * text-only — image blocks must never reach the wire. This bridge exports
+ * every image block in the claimed messages to local files (a deterministic
+ * content-addressed store under the dsh home, plus a copy inside the session
+ * workspace), rewrites the blocks into path-reference text, and injects a
+ * system reminder naming the qwen-mm MCP tools that read them
+ * (`mcp__qwen-mm-plugins-api__vision_chat`,
+ * `mcp__qwen-mm-plugins-core__read_image`).
  *
  * @module @deepseek-ai/dsh-qwen-mm/attachments
  */
 import type { Context } from '@deepseek-ai/cordis';
 import type { Agent } from '@deepseek-ai/dsh-agent';
 import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment';
-import type { LlmRuntime } from '@deepseek-ai/dsh-llm';
 import type { UserMessage } from '@deepseek-ai/dsh-llm';
 import type Schema from '@deepseek-ai/schemastery';
 /** Cordis plugin name. */
 export declare const name = "qwen-mm-attachments";
-/** Services required by the bridge. */
+/** Service required by the bridge (the durable attachment seam). */
 export declare const inject: string[];
 /** Bridge configuration. */
 export interface Config {
     /** Directory exported image files land in; defaults to `<dshHome>/qwen-mm/attachments`. */
     readonly exportDir?: string;
+    /** Directory for the per-session workspace copy; defaults to `<sessionCwd>/qwen-mm`. */
+    readonly workspaceDir?: string;
 }
-/** Config schema for the loader; an omitted `exportDir` falls back to `<dshHome>/qwen-mm/attachments`. */
+/** Config schema for the loader; an omitted value falls back at apply time. */
 export declare const Config: Schema<Config>;
 /** One exported image file. */
 export interface ExportedImage {
@@ -56,6 +62,18 @@ export declare function exportFileName(ref: ImageAttachmentRef): string;
  */
 export declare function exportImages(reader: ImageReader, exportDir: string, messages: readonly UserMessage[], signal: AbortSignal): Promise<ExportedImage[]>;
 /**
+ * Mirror already-exported files into a workspace directory (used so the model
+ * can reach the copy through both MCP tools and ordinary file tools). Files
+ * that already exist there are skipped; the returned list points at the
+ * workspace copies.
+ * @param exported - the files written to the export store.
+ * @param workspaceDir - destination directory; created on first write.
+ * @returns the mirrored files (same ids, workspace paths).
+ */
+export declare function mirrorToWorkspace(exported: readonly ExportedImage[], workspaceDir: string): Promise<ExportedImage[]>;
+/** The session's workspace root, or undefined when the session carries no cwd. */
+export declare function workspaceRootFor(agent: Agent): string | undefined;
+/**
  * Rewrite messages, replacing each image block with a text block naming its
  * exported path, so a text-only route never receives an image block.
  * @param messages - the messages to rewrite.
@@ -67,19 +85,9 @@ export declare function rewriteMessages(messages: readonly UserMessage[], pathBy
 /**
  * Render the injected guidance reminder naming the exported files and the
  * qwen-mm MCP tools that read them.
- * @param files - the exported image files.
+ * @param files - the exported image files (workspace copies preferred).
  * @returns the verbatim `<system-reminder>` body.
  */
 export declare function renderReminder(files: readonly ExportedImage[]): string;
-/**
- * Whether the agent's route declares image input. An unresolvable route is
- * treated as text-only so the bridge still exports and rewrites.
- * @param llm - the LLM service resolving route metadata.
- * @param agent - the agent whose route is inspected.
- * @param signal - the current step's abort signal.
- * @returns true when the route declares `image` input modality.
- */
-export declare function routeSupportsImage(llm: LlmRuntime, agent: Agent, signal: AbortSignal): Promise<boolean>;
-/** Register the attachment bridge: export images and rewrite them on text-only routes. */
+/** Register the attachment bridge: export images, copy them into the workspace, and rewrite image blocks. */
 export declare function apply(ctx: Context, config: Config): void;
-//# sourceMappingURL=attachments.d.ts.map

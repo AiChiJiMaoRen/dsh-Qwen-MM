@@ -1,125 +1,79 @@
 # dsh-qwen-mm
 
-把 [Qwen-MM-Plugins](https://github.com/QwenLM/Qwen-MM-Plugins) 集成进 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)，让纯文本的 DeepSeek 模型也能"看懂"图片、视频、文档，并调用网络搜索、3D/CAD 等工具。
+把 [Qwen-MM-Plugins](https://github.com/QwenLM/Qwen-MM-Plugins) 集成进官方 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（dsh），让纯文本的 DeepSeek 模型也能"看懂"图片、视频、文档，并调用网络搜索、3D/CAD、视频剪辑等工具——**无需任何 harness 核心补丁，官方 0.1.0-rc.6 直接可装**。
 
-> **自主实现说明**：本插件的架构调研、编码、测试、文档与真机验证，均由 **DeepSeek Harness（`dsh`）驱动 `deepseek-v4-flash` 模型自主完成**，全程无需人工编写脚手架。
+> 实现背景：本仓库最初按 fork（含核心补丁的 deepseek-harness）开发；0.1.0 起改为**孪生路由 + 附件桥接**方案，用纯插件侧接口取代核心补丁，因此不再依赖 fork，也不受官方发版节奏绑架（版本配对见 [COMPAT.md](./COMPAT.md)）。
 
----
+## 它怎么工作
 
-## English
+1. **孪生路由（`qwen-mm-vision`）**——把当前文本模型克隆注册为 `qwen-mm-vision` provider，声明支持图片并将它设为默认模型选择。于是 host 的图片准入闸放行拖图/粘贴，Web 输入框的图片按钮可用；但每个请求仍走原文本 provider（孪生只是"准入门面"）。
+2. **附件桥接（`qwen-mm-attachments`）**——在 `agent/pre-step` 把每个图片块落盘到 `<dshHome>/qwen-mm/attachments/`，并在会话工作区 `<cwd>/qwen-mm/` 放一份副本，然后把图片块改写为路径引用 + system-reminder（点名 `mcp__qwen-mm-plugins-api__vision_chat` 与 `mcp__qwen-mm-plugins-core__read_image`）。**底层 API 永远不会收到图片字节。**
+3. **能力层**——8 个 Qwen-MM-Plugins 能力以 SKILL + MCP server 形式注入，全部 pin 到不可变 release tag。
 
-Make [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) multimodal-native by integrating [Qwen-MM-Plugins](https://github.com/QwenLM/Qwen-MM-Plugins).
-
-> **Autonomous implementation.** This plugin was designed and implemented end-to-end, without hand-written scaffolding, by **DeepSeek Harness (`dsh`) running the `deepseek-v4-flash` model** — architecture research, coding, tests, documentation, and live verification were all performed by the agent itself.
-
-## 功能总览 / Capabilities
+## 功能总览
 
 | 能力 | 实现方式 | 需要密钥 |
 |---|---|---|
-| 读图 / 读视频 / 读文档 / 读代码 / 读数据 | `core` MCP 工具（`read_image`、`visualize`、`media_info`、`read_video` …） | ❌ 无 |
-| 云端视觉 / OCR / ASR / 物体定位 | `api` MCP 工具（`vision_chat`、`ocr`、`omni_*` …），基于 DashScope Qwen VL/Omni | ✅ DashScope |
-| 网络搜索 + 以图搜图 | `search` MCP 工具（`web_search`、`web_extractor`、`image_search`） | ✅ Serper / Tavily / Exa |
+| 读图 / 读视频 / 读文档 / 读数据 | `core` MCP 工具（`read_image`、`visualize`、`media_info` …） | ❌ 无 |
+| 云端视觉 / OCR / ASR / 物体定位 | `api` MCP 工具（`vision_chat`、`ocr`、`omni_*` …） | ✅ DashScope |
+| 网络搜索 + 以图搜图 | `search` MCP 工具（`web_search`、`web_extractor`、`image_search`） | ✅ Serper / Exa / Tavily |
 | 长视频问答 / 视频剪辑 / Blender / FreeCAD / 数学视频 | `video-memory`、`video-edit`、`blender`、`freecad`、`edu-agent` | 按能力而定 |
-| **拖图上传 → 纯文本模型读懂** | 下方"图片附件桥接" | ❌ 无（走 `vision_chat`） |
 
-## 图片附件桥接
-
-DeepSeek 模型是纯文本的，所以 Web 输入框的图片准入默认会拒绝上传。本插件用三段协作让拖图照样可用：
-
-1. **`dsh-attachment` 图片消费方注册表** —— `registerImageIntakeConsumer()` / `hasImageIntakeConsumer()`（见随附的核心补丁），让 host 在有消费方注册时于纯文本路由上放行图片上传。
-2. **`attachments` 桥接插件** —— 在 `agent/pre-step` 把每个图片块导出到 `<dshHome>/qwen-mm/attachments/<sha256>.<ext>`，并把消息改写为路径引用。
-3. **使用指引** —— 提示模型通过 `mcp__qwen-mm-plugins-api__vision_chat`（云端 Qwen VL）或 `mcp__qwen-mm-plugins-core__read_image` 读取图片。
-
-拖入图片 → 文件落盘 → 纯文本模型通过 MCP 读懂它。
-
-## 开箱即用（推荐）/ Out-of-the-box (recommended)
-
-拖图功能依赖 DeepSeek Harness 核心的一小段改动（图片消费方注册表），它尚未进入官方发布版。因此推荐从 **包含该改动的 fork** 安装，这样全部功能（含拖图）一步到位：
+## 安装（官方 0.1.0-rc.6）
 
 ```sh
-# 1. 克隆 fork（含核心改动 + 插件源码）
-git clone https://github.com/RRRosmontis/deepseek-harness.git
-cd deepseek-harness
-pnpm install
-pnpm run build
-
-# 2. 安装本插件到 web profile（从 git 或本地）
-pnpm dsh --profile web plugin add github:RRRosmontis/dsh-qwen-mm
-#   或：pnpm dsh --profile web plugin add ./packages/bundle/qwen-mm
-
-# 3. 启动
-pnpm dsh --profile web
+dsh plugin --profile web add ./dsh-qwen-mm        # 或从 git/npm 安装
+dsh --profile web                                  # 重启生效
 ```
 
-前置：Node.js、[`pnpm`](https://pnpm.io/)、[`uv`](https://docs.astral.sh/uv/)（提供 `uvx`）。
+装完打开新会话：模型选择器里会出现 **DeepSeek (Vision)**（`qwen-mm-vision`），默认已选中；直接拖图即可，模型会通过 MCP 工具读懂图片。
 
-## 仅装插件 / Plugin-only
+### 前置
 
-如果你用的是**官方发布版** `dsh`，MCP 工具与内置 skills 照常可用；只有**拖图**功能需要核心改动（见下方「核心前置」）。
+- [`uv`](https://docs.astral.sh/uv/)：提供 `uvx`，MCP 服务器按需拉取（首次从 git 安装较慢）。
+- `ffmpeg`：视频/音频类能力（`core` 读图不需要）。
+- 系统程序按能力：Blender、FreeCAD、Node/Chromium（视频剪辑）、LibreOffice 等，缺了对应 MCP server 会连接失败但不影响其余能力。
+- 插件启动时会检查 `uvx`/`ffmpeg` 是否存在，缺失只告警、不崩溃。
+
+### 密钥
+
+DSH 会过滤 MCP 子进程环境里的凭据类变量，请把密钥写进共享配置文件，而不是环境变量：
 
 ```sh
-# 从 git 仓库安装（锁定 commit）
-dsh plugin --profile web add github:RRRosmontis/dsh-qwen-mm#<sha>
-# 或从本地目录安装
-dsh plugin --profile web add ./dsh-qwen-mm
+# 仅需配置一次（按提示选能力并填 key）
+uvx --from 'qwen-mm-plugins[api] @ git+https://github.com/QwenLM/Qwen-MM-Plugins.git@qwen-mm-plugins-api-v1.0.2' qwen-mm-plugins-api configure
 ```
 
-随后重启 `dsh --profile web` 并打开新会话。
+DashScope 开通：注册/登录阿里云 → [百炼控制台](https://bailian.console.aliyun.com) → 开通模型服务（新用户有免费额度）→ 创建 `sk-` 开头的 API Key → 填进上面的 configure 流程。
 
-### 密钥 / Credentials
+## 按需禁用能力
 
-DSH 会过滤 MCP 子进程环境里的凭据类变量，所以请把密钥写进共享配置文件，而不是环境变量：
+在 profile 的 `cordis.patch.yml` 里按 id 禁用，例如：
 
-```sh
-curl -fsSL https://raw.githubusercontent.com/QwenLM/Qwen-MM-Plugins/main/install.sh | bash -s -- configure
+```yaml
+- id: mcp-qwen-mm-blender
+  disabled: true
+- id: mcp-qwen-mm-freecad
+  disabled: true
 ```
 
-`core` 无需密钥。`api`/`video-memory`/`video-edit`/`edu-agent` 需要 DashScope 密钥；`search` 需要 Serper、Exa 或 Tavily。视频工具需要 `ffmpeg`；Blender/FreeCAD/LibreOffice/Chromium 仅由调用它们的能力按需使用。
+可禁用的 id：`mcp-qwen-mm-core/api/search/video-memory/video-edit/blender/freecad`，以及 `qwen-mm-attachments`、`qwen-mm-vision`。
 
-## 用法 / Usage
-
-```text
-@report.pdf    总结第 3 页并提取表格。
-@meeting.mp4   转写这段会议并标注说话人与时间戳。
-@place.jpg     识别这张照片的拍摄地点并在网上核实。
-```
-
-…或者直接把图片拖进输入框提问（拖图需使用上面的 fork）。
-
-## 核心前置 / Core prerequisite
-
-拖图功能依赖 DeepSeek Harness 核心的一小段改动（`AttachmentStore` 上的图片消费方注册表，由 host 图片准入闸查询）。它**尚未进入官方发布版**，两个获取方式：
-
-- **推荐**：使用 [RRRosmontis/deepseek-harness](https://github.com/RRRosmontis/deepseek-harness) fork，改动已包含在内（见「开箱即用」）。
-- **或**：把 [`deepseek-harness-core.patch`](./deepseek-harness-core.patch) 应用到任意 DeepSeek Harness 源码后再构建：
-
-  ```sh
-  git clone https://github.com/deepseek-ai/deepseek-harness.git
-  cd deepseek-harness
-  curl -O https://raw.githubusercontent.com/RRRosmontis/dsh-qwen-mm/main/deepseek-harness-core.patch
-  git apply --check deepseek-harness-core.patch   # 先干跑，确认无冲突
-  git apply deepseek-harness-core.patch           # 正式应用
-  pnpm install && pnpm run build
-  ```
-
-  该 patch 基于 deepseek-harness `master` 顶点（commit `47f9438`）生成；对更旧或更新版本可能需手动合并。
-
-MCP 服务器与内置 skills 无需该改动，在官方发布版上即可工作；只有拖图准入需要它。
-
-## 目录结构 / Layout
+## 目录结构
 
 ```
-cordis.patch.yml      插件补丁层：skill provider 行 + 图片桥接行 + 7 个 MCP 服务器行
-lib/                  预构建运行时（index / invariant / attachments）+ 类型声明
+cordis.patch.yml      插件补丁层：skill 行 + 附件桥接行 + 孪生路由行 + 7 个 MCP 服务器行
+lib/                  预构建运行时（index / invariant / attachments / vision）+ 类型声明
 assets/skills/        内置的 Qwen-MM-Plugins SKILL.md 正文（固定到不可变 release tag）
 src/                  TypeScript 源码
-tests/                vitest 测试（provider / patch / bridge / intake）
+tests/                vitest 测试（bridge / vision / patch / loader）
+COMPAT.md             与 dsh 版本的兼容矩阵与升级指引
 ```
 
-## 内置内容与署名 / Vendored content & attribution
+## 内置内容与署名
 
 `assets/skills/` 取自 Apache-2.0 协议的 [Qwen-MM-Plugins](https://github.com/QwenLM/Qwen-MM-Plugins) 仓库，固定在其不可变 release tag 上；上游保留其版权与许可证。MCP 命令在运行时从上游 git 仓库安装同一 tag 的发布版本。
 
-## 许可证 / License
+## 许可
 
 [MIT](./LICENSE)

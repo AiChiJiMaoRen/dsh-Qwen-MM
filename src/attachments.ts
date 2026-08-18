@@ -1,21 +1,25 @@
 /**
- * Qwen-MM image attachment bridge: exports user-attached images to local
- * files and, on text-only model routes, rewrites the image blocks into
- * path-reference text so the model can read them through the qwen-mm MCP
- * tools (`mcp__qwen-mm-plugins-api__vision_chat`,
- * `mcp__qwen-mm-plugins-core__read_image`). Image-capable routes keep the
- * blocks untouched and read them natively.
+ * Qwen-MM image attachment bridge.
+ *
+ * The twin vision route (`qwen-mm-vision`) declares image input so the host
+ * image-intake gate admits uploads, but the underlying DeepSeek API is
+ * text-only — image blocks must never reach the wire. This bridge exports
+ * every image block in the claimed messages to local files (a deterministic
+ * content-addressed store under the dsh home, plus a copy inside the session
+ * workspace), rewrites the blocks into path-reference text, and injects a
+ * system reminder naming the qwen-mm MCP tools that read them
+ * (`mcp__qwen-mm-plugins-api__vision_chat`,
+ * `mcp__qwen-mm-plugins-core__read_image`).
  *
  * @module @deepseek-ai/dsh-qwen-mm/attachments
  */
 
-import { access, mkdir, writeFile } from 'node:fs/promises'
-import { join } from 'node:path'
+import { access, copyFile, mkdir, writeFile } from 'node:fs/promises'
+import { basename, join } from 'node:path'
 import type { Context } from '@deepseek-ai/cordis'
 import type { Agent, PreStepDecision } from '@deepseek-ai/dsh-agent'
 import type { ImageAttachmentRef } from '@deepseek-ai/dsh-attachment'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
-import type { LlmRuntime } from '@deepseek-ai/dsh-llm'
 import type { TextBlock, UserMessage } from '@deepseek-ai/dsh-llm'
 import { resolveDshHome } from '@deepseek-ai/dsh-home-paths'
 import z from '@deepseek-ai/schemastery'
@@ -23,18 +27,21 @@ import type Schema from '@deepseek-ai/schemastery'
 
 /** Cordis plugin name. */
 export const name = 'qwen-mm-attachments'
-/** Services required by the bridge. */
-export const inject = ['attachments', 'agents', 'llm']
+/** Service required by the bridge (the durable attachment seam). */
+export const inject = ['attachments']
 
 /** Bridge configuration. */
 export interface Config {
   /** Directory exported image files land in; defaults to `<dshHome>/qwen-mm/attachments`. */
   readonly exportDir?: string
+  /** Directory for the per-session workspace copy; defaults to `<sessionCwd>/qwen-mm`. */
+  readonly workspaceDir?: string
 }
 
-/** Config schema for the loader; an omitted `exportDir` falls back to `<dshHome>/qwen-mm/attachments`. */
+/** Config schema for the loader; an omitted value falls back at apply time. */
 export const Config: Schema<Config> = z.object({
   exportDir: z.string(),
+  workspaceDir: z.string(),
 })
 
 const MEDIA_EXT: Record<ImageAttachmentRef['mediaType'], string> = {
@@ -94,8 +101,7 @@ export async function exportImages(
       const id = String(block.attachment.attachmentId).replace(/^sha256:/, '')
       if (seen.has(id)) continue
       seen.add(id)
-      const file = exportFileName(block.attachment)
-      const path = join(exportDir, file)
+      const path = join(exportDir, exportFileName(block.attachment))
       try {
         await access(path)
       } catch {
@@ -108,6 +114,39 @@ export async function exportImages(
     }
   }
   return exported
+}
+
+/**
+ * Mirror already-exported files into a workspace directory (used so the model
+ * can reach the copy through both MCP tools and ordinary file tools). Files
+ * that already exist there are skipped; the returned list points at the
+ * workspace copies.
+ * @param exported - the files written to the export store.
+ * @param workspaceDir - destination directory; created on first write.
+ * @returns the mirrored files (same ids, workspace paths).
+ */
+export async function mirrorToWorkspace(
+  exported: readonly ExportedImage[],
+  workspaceDir: string,
+): Promise<ExportedImage[]> {
+  const mirrored: ExportedImage[] = []
+  await mkdir(workspaceDir, { recursive: true })
+  for (const file of exported) {
+    const target = join(workspaceDir, basename(file.path))
+    try {
+      await access(target)
+    } catch {
+      await copyFile(file.path, target)
+    }
+    mirrored.push({ id: file.id, path: target })
+  }
+  return mirrored
+}
+
+/** The session's workspace root, or undefined when the session carries no cwd. */
+export function workspaceRootFor(agent: Agent): string | undefined {
+  const header = (agent.session as { header?: { cwd?: string } }).header
+  return header?.cwd
 }
 
 /**
@@ -138,53 +177,24 @@ export function rewriteMessages(
 /**
  * Render the injected guidance reminder naming the exported files and the
  * qwen-mm MCP tools that read them.
- * @param files - the exported image files.
+ * @param files - the exported image files (workspace copies preferred).
  * @returns the verbatim `<system-reminder>` body.
  */
 export function renderReminder(files: readonly ExportedImage[]): string {
   return [
     '<system-reminder>',
-    'Images in the user\'s latest message were exported to local files because the active model route is text-only. Read them through the qwen-mm MCP tools: call `mcp__qwen-mm-plugins-api__vision_chat` with `images: ["<path>"]` to understand a picture via cloud Qwen VL, or `mcp__qwen-mm-plugins-core__read_image` with `image_path: "<path>"` for local reading. Exported files:',
+    'Images in the user\'s latest message were exported to local files so the qwen-mm MCP tools can read them (the chat route itself is text-only). Understand a picture via cloud Qwen VL with `mcp__qwen-mm-plugins-api__vision_chat` (e.g. `images: ["<path>"]`), or read it locally with `mcp__qwen-mm-plugins-core__read_image` (`image_path: "<path>"`). Exported files:',
     ...files.map(file => `- ${file.path}`),
     '</system-reminder>',
   ].join('\n')
 }
 
-/**
- * Whether the agent's route declares image input. An unresolvable route is
- * treated as text-only so the bridge still exports and rewrites.
- * @param llm - the LLM service resolving route metadata.
- * @param agent - the agent whose route is inspected.
- * @param signal - the current step's abort signal.
- * @returns true when the route declares `image` input modality.
- */
-export async function routeSupportsImage(
-  llm: LlmRuntime,
-  agent: Agent,
-  signal: AbortSignal,
-): Promise<boolean> {
-  const header = agent.session.requestHeader()
-  const provider = header?.config.provider ?? agent.options.provider
-  const model = header?.config.model ?? agent.options.model
-  if (provider === undefined || model === undefined) return false
-  try {
-    const info = await llm.resolveModelInfo(provider, model, signal)
-    return info.inputModalities?.includes('image') ?? false
-  } catch {
-    return false
-  }
-}
-
-/** Register the attachment bridge: export images and rewrite them on text-only routes. */
+/** Register the attachment bridge: export images, copy them into the workspace, and rewrite image blocks. */
 export function apply(ctx: Context, config: Config): void {
   const exportDir = config.exportDir ?? join(resolveDshHome(), 'qwen-mm', 'attachments')
-  // Advertise to the host image-intake gate that this plugin consumes image
-  // blocks, so uploads are admitted on text-only routes and rewritten here.
-  ctx.effect(() => ctx.attachments.registerImageIntakeConsumer(name))
   ctx.on('agent/pre-step', async ({ agent, messages, signal }, next): Promise<PreStepDecision> => {
     const decision = await next()
     if (decision.kind === 'reject') return decision
-    if (await routeSupportsImage(ctx.llm, agent, signal)) return decision
     const exported = await exportImages(
       (ref, sig) => ctx.attachments.readImage(ref, sig),
       exportDir,
@@ -192,10 +202,18 @@ export function apply(ctx: Context, config: Config): void {
       signal,
     )
     if (exported.length === 0) return decision
-    const pathById = new Map(exported.map(file => [file.id, file.path]))
+
+    // Prefer workspace copies when the session has a workspace; they are
+    // reachable with ordinary file tools as well as the MCP readers.
+    const workspace = config.workspaceDir ?? workspaceRootFor(agent)
+    const preferred = workspace === undefined
+      ? exported
+      : await mirrorToWorkspace(exported, join(workspace, 'qwen-mm'))
+
+    const pathById = new Map(preferred.map(file => [file.id, file.path]))
     const rewritten = rewriteMessages(decision.messages, pathById)
     const reminder = createUserMessage({
-      content: [{ type: 'text', text: renderReminder(exported) }],
+      content: [{ type: 'text', text: renderReminder(preferred) }],
       source: { kind: 'plugin', plugin: 'qwen-mm' },
     })
     return { kind: 'enter', messages: [...rewritten, reminder] }

@@ -1,6 +1,7 @@
 /**
  * `@deepseek-ai/dsh-qwen-mm` — bundled provider registration, vendored
- * catalog integrity, and the bundle patch's MCP server rows.
+ * catalog integrity, the bundle patch's MCP server rows, and the twin vision
+ * row.
  */
 
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs'
@@ -74,19 +75,22 @@ describe('dsh-qwen-mm plugin', () => {
 })
 
 describe('dsh-qwen-mm bundle patch', () => {
-  it('declares a parseable patch with the skill rows and one MCP row per server capability', () => {
+  it('declares a parseable patch with the plugin rows and one MCP row per server capability', () => {
     const parsed = yaml.load(readFileSync(PATCH_URL, 'utf8'), { schema: entryListSchema })
     expect(Array.isArray(parsed)).toBe(true)
     const rows = (parsed as { insert?: { id?: string; name?: string; config?: Record<string, unknown> }[] }[]).flatMap(
       patch => patch.insert ?? [],
     )
-    expect(rows.length).toBe(9)
+    expect(rows.length).toBe(10)
 
     const skillRow = rows.find(row => row.id === 'qwen-mm')
     expect(skillRow?.name).toBe('@deepseek-ai/dsh-qwen-mm')
 
     const attachmentsRow = rows.find(row => row.id === 'qwen-mm-attachments')
     expect(attachmentsRow?.name).toBe('@deepseek-ai/dsh-qwen-mm/attachments')
+
+    const visionRow = rows.find(row => row.id === 'qwen-mm-vision')
+    expect(visionRow?.name).toBe('@deepseek-ai/dsh-qwen-mm/vision')
 
     const mcpRows = rows.filter(row => row.id?.startsWith('mcp-qwen-mm-'))
     expect(mcpRows).toHaveLength(7)
