@@ -21,6 +21,7 @@ import {
   LlmAdapter,
   type GenerateOptions,
   type LlmCallConfig,
+  type LlmModelInfo,
   type LlmProviderInfo,
   type LlmResolvedModelInfo,
   type StreamChunk,
@@ -68,12 +69,31 @@ class TwinAdapter extends LlmAdapter {
     return undefined
   }
 
+  listModels(): Promise<readonly LlmModelInfo[]> {
+    // Mirror the source provider's advertised models so the twin shows up in
+    // the model selector with the same option set (e.g. deepseek-v4-flash),
+    // rebranding each under the twin provider id (listModels validates that
+    // every returned model.provider equals the queried provider).
+    return this.ctx.llm.listModels(this.source).then(models =>
+      models.map(m => ({ ...m, provider: this.twin }))
+    )
+  }
+
   async resolveModel(_provider: string, model: string): Promise<LlmResolvedModelInfo> {
-    // Advertise image input so the host intake gate admits uploads, the
-    // model selector shows the route as vision-capable, and the UI enables
-    // the paperclip/drag-drop input. The bridge still rewrites every image
-    // block to a local path before the step reaches the wire.
-    return { provider: this.twin, id: model, name: model, inputModalities: ['text', 'image'] }
+    let src: LlmResolvedModelInfo | null
+    try { src = await this.ctx.llm.resolveModelInfo(this.source, model) } catch { src = null }
+    // Mirror the source model's full metadata (reasoning efforts, context,
+    // max tokens) so capabilities like reasoning effort "max" stay supported,
+    // while overriding the input modalities to advertise image input.
+    return {
+      provider: this.twin,
+      id: model,
+      name: src?.name ?? model,
+      ...(src?.context === undefined ? {} : { context: src.context }),
+      ...(src?.reasoning === undefined ? {} : { reasoning: src.reasoning }),
+      ...(src?.defaultMaxTokens === undefined ? {} : { defaultMaxTokens: src.defaultMaxTokens }),
+      inputModalities: ['text', 'image'],
+    }
   }
 
   stream(options: GenerateOptions): AsyncIterable<StreamChunk> {
@@ -110,7 +130,8 @@ export function apply(ctx: Context, config: Config): void {
     throw new Error(`qwen-mm-vision: sourceProvider "${source}" must differ from twinProvider "${twin}"`)
   }
   if (!ctx.llm.listProviders().some(provider => provider.id === source)) {
-    throw new Error(`qwen-mm-vision: source provider "${source}" has no registered adapter`)
+    ctx.logger.warn(`qwen-mm-vision: source provider "${source}" has no registered adapter — vision twin disabled`)
+    return
   }
 
   const adapter = new TwinAdapter(ctx, source, twin)

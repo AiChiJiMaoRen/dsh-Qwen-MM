@@ -1,6 +1,6 @@
 {
   "name": "@deepseek-ai/dsh-qwen-mm",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Qwen-MM-Plugins integration bundle for DeepSeek Harness: bundled multimodal skills, MCP server rows, an image attachment bridge for text-only model routes, a twin vision route (no harness core patch required), and a GUI settings card",
   "type": "module",
   "main": "lib/index.js",

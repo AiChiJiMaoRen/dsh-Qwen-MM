@@ -6,3 +6,6 @@ lib/types/*.map
 
 tsconfig.check.json
 
+
+# local editor backups
+*.bak
